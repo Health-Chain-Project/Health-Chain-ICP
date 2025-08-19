@@ -1,0 +1,17 @@
+{
+  "canisters": {
+    "server": {
+      "candid": "src/server/server.did",
+      "package": "server",
+      "type": "rust"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1
+}
