@@ -1,3 +1,17 @@
+type RegisterData = record {
+  age : nat32;
+  bio : text;
+  username : text;
+  password : text;
+  name : text;
+  email : text;
+  avatar : text;
+};
 service : {
-    "greet": (text) -> (text) query;
+  caller : (opt text) -> (principal) query;
+  get_health_data : () -> (text) query;
+  login_user : (text, text) -> (text);
+  register_user : (RegisterData) -> (text);
+  validate_session : (text) -> (bool);
+  whoami : () -> (text) query;
 }
