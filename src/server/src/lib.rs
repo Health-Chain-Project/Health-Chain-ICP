@@ -1,18 +1,17 @@
 use candid::{CandidType, Decode, Deserialize, Encode, Principal};
 use ic_cdk::api::msg_caller;
+use ic_cdk::api::time;
 use ic_cdk::{export_candid, query, update};
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::storable::Bound;
 use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap, StableCell, Storable};
-// use jsonwebtoken::{
-//     decode, encode, Algorithm, DecodingKey, EncodingKey, Header, TokenData, Validation,
-// };
 use serde::Serialize;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::hash::{DefaultHasher, Hash, Hasher};
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 type NoteId = u128;
+type HashedEmail = String;
 
 impl Storable for UserIdentity {
     fn to_bytes(&self) -> Cow<[u8]> {
@@ -79,7 +78,34 @@ impl Storable for NoteIds {
     const BOUND: Bound = Bound::Unbounded;
 }
 
-#[derive(CandidType, Deserialize, Default)]
+#[derive(CandidType, Deserialize, Default, Clone)]
+pub struct HashedEmails {
+    emails: Vec<HashedEmail>,
+}
+
+impl HashedEmails {
+    pub fn new() -> Self {
+        Self { emails: Vec::new() }
+    }
+    pub fn iter(&self) -> impl std::iter::Iterator<Item = &HashedEmail> {
+        self.emails.iter()
+    }
+}
+
+impl Storable for HashedEmails {
+    fn to_bytes(&self) -> Cow<[u8]> {
+        Cow::Owned(Encode!(self).unwrap())
+    }
+    fn from_bytes(bytes: Cow<[u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).unwrap()
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).unwrap()
+    }
+    const BOUND: Bound = Bound::Unbounded;
+}
+
+#[derive(CandidType, Deserialize, Default, Debug)]
 pub struct User {
     name: String,
     email: String,
@@ -107,16 +133,15 @@ impl User {
             avatar: register_data.avatar,
         }
     }
-    fn login(email: String, password: String) -> Self {
+    fn login(login_data: LoginrData) -> Self {
         User {
-            email,
-            password,
+            email: login_data.email,
+            password: login_data.password,
             ..Default::default()
         }
     }
     pub fn calculate_hash(&self) -> u64 {
-        let hash = self.hash(&mut DEFAULT_HASHER.take());
-        calculate_hash(&hash)
+        calculate_hash(&self)
     }
 }
 
@@ -165,19 +190,27 @@ thread_local! {
         )
     );
 
-    static NOTES: RefCell<StableBTreeMap<NoteId, EncryptedNote, Memory>> = RefCell::new(
-        StableBTreeMap::init(
+    static REGISTERED_EMAILS: RefCell<StableCell<HashedEmails, Memory>> = RefCell::new(
+        StableCell::init(
             MEMORY_MANAGER.with_borrow(|m| m.get(MemoryId::new(1))),
+            HashedEmails::new()
         )
     );
 
-    static NOTE_OWNERS: RefCell<StableBTreeMap<UserIdentity, NoteIds, Memory>> = RefCell::new(
+
+    static NOTES: RefCell<StableBTreeMap<NoteId, EncryptedNote, Memory>> = RefCell::new(
         StableBTreeMap::init(
             MEMORY_MANAGER.with_borrow(|m| m.get(MemoryId::new(2))),
         )
     );
 
-    static USERS: RefCell<StableBTreeMap<UserIdentity, User, Memory>> = RefCell::new(
+    static NOTE_OWNERS: RefCell<StableBTreeMap<UserIdentity, NoteIds, Memory>> = RefCell::new(
+        StableBTreeMap::init(
+            MEMORY_MANAGER.with_borrow(|m| m.get(MemoryId::new(3))),
+        )
+    );
+
+    static USERS: RefCell<StableBTreeMap<u64, User, Memory>> = RefCell::new(
         StableBTreeMap::init(
             MEMORY_MANAGER.with_borrow(|m| m.get(MemoryId::new(4))),
         )
@@ -193,8 +226,8 @@ thread_local! {
 #[query]
 fn caller(token: Option<String>) -> Principal {
     let caller = msg_caller();
-    if token.is_some() {
-        if !validate_session(token.unwrap()) {
+    if let Some(token) = token {
+        if !validate_session(token) {
             panic!("cant verify")
         }
     } else if caller == Principal::anonymous() {
@@ -202,33 +235,6 @@ fn caller(token: Option<String>) -> Principal {
     }
     caller
 }
-
-// fn generate_token(hash: u64) -> Result<String, jsonwebtoken::errors::Error> {
-//     let secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
-//     let key = EncodingKey::from_secret(secret.as_ref());
-
-//     let claims = Claims {
-//         sub: hash.to_string(),
-//         exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
-//         iat: chrono::Utc::now().timestamp() as usize,
-//         iss: "healthchain".to_string(),
-//     };
-
-//     encode(&Header::default(), &claims, &key)
-// }
-
-// fn validate_token(token: String) -> Result<TokenData<Claims>, jsonwebtoken::errors::Error> {
-//     let secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
-//     let mut validation = Validation::new(Algorithm::HS256);
-//     validation.set_issuer(&["your-app"]);
-//     validation.validate_exp = true;
-//     validation.validate_nbf = true;
-
-//     let key = DecodingKey::from_secret(secret.as_ref());
-//     decode::<Claims>(&token, &key, &validation)
-// }
-
-use ic_cdk::api::time;
 
 fn generate_token(hash: u64) -> String {
     let timestamp = time();
@@ -241,7 +247,7 @@ fn generate_token(hash: u64) -> String {
     token
 }
 
-#[update]
+#[query]
 fn validate_session(token: String) -> bool {
     if let Some(hash_str) = token.strip_prefix("hc_").and_then(|s| s.split('_').next()) {
         if let Ok(hash) = hash_str.parse::<u64>() {
@@ -262,9 +268,18 @@ fn whoami() -> String {
     msg_caller().to_string()
 }
 
+#[query]
+fn whoami_token(token: String) -> Option<User> {
+    if let Some(hash_str) = token.strip_prefix("hc_").and_then(|s| s.split('_').next()) {
+        if let Ok(hash) = hash_str.parse::<u64>() {
+            return USERS.with(|sessions| Some(sessions.borrow().get(&hash).unwrap()));
+        }
+    }
+    None
+}
+
 #[derive(CandidType, Deserialize)]
 pub struct RegisterData {
-    username: String,
     email: String,
     password: String,
     age: u32,
@@ -273,35 +288,39 @@ pub struct RegisterData {
     name: String,
 }
 
+#[derive(CandidType, Deserialize)]
+pub struct LoginrData {
+    email: String,
+    password: String,
+}
+
 #[update]
 fn register_user(register_data: RegisterData) -> String {
+    let email = register_data.email.clone();
+    if REGISTERED_EMAILS.with_borrow(|emails| emails.get().emails.contains(&email)) {
+        panic!("Nope")
+    }
     let user = User::register(register_data);
     let hash = user.calculate_hash();
-    let user = USERS.with(|users| users.borrow_mut().insert(UserIdentity(hash), user));
+    USERS.with(|users| users.borrow_mut().insert(hash, user));
+    REGISTERED_EMAILS.with_borrow_mut(|emails| {
+        let mut current_emails = emails.get().clone();
+        current_emails.emails.push(email);
+        emails.set(current_emails)
+    });
     generate_token(hash)
 }
 
 #[update]
-fn login_user(email: String, password: String) -> String {
-    let user = User::login(email, password);
+fn login_user(login_data: LoginrData) -> String {
+    let user = User::login(login_data);
     let hash_calc = user.calculate_hash();
-    let user = USERS.with(|users| users.borrow().get(&UserIdentity(hash_calc)));
+    let user = USERS.with(|users| users.borrow().get(&hash_calc));
     if user.is_some() {
         generate_token(hash_calc)
     } else {
         panic!("User not Found")
     }
 }
-
-// #[update]
-// fn register_icp(register_data: RegisterData) {
-//     let caller = caller();
-//     USERS.with_borrow_mut(|users| {
-//         users.insert(
-//             UserIdentity::InternetIdentity(caller),
-//             User::new(register_data),
-//         );
-//     });
-// }
 
 export_candid!();

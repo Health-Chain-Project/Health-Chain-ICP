@@ -1,7 +1,15 @@
+type LoginrData = record { password : text; email : text };
 type RegisterData = record {
   age : nat32;
   bio : text;
-  username : text;
+  password : text;
+  name : text;
+  email : text;
+  avatar : text;
+};
+type User = record {
+  age : nat32;
+  bio : text;
   password : text;
   name : text;
   email : text;
@@ -10,8 +18,9 @@ type RegisterData = record {
 service : {
   caller : (opt text) -> (principal) query;
   get_health_data : () -> (text) query;
-  login_user : (text, text) -> (text);
+  login_user : (LoginrData) -> (text);
   register_user : (RegisterData) -> (text);
-  validate_session : (text) -> (bool);
+  validate_session : (text) -> (bool) query;
   whoami : () -> (text) query;
+  whoami_token : (text) -> (opt User) query;
 }
